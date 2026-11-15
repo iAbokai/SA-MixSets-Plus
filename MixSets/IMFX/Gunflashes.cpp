@@ -83,7 +83,7 @@ void Gunflashes::ProcessPerFrame() {
 }
 
 bool __fastcall Gunflashes::MyProcessUseGunTask(CTaskSimpleUseGun *task, int, CPed *ped) {
-    if (task->m_pWeaponInfo == CWeaponInfo::GetWeaponInfo(ped->m_aWeapons[ped->m_nActiveWeaponSlot].m_nType, ped->GetWeaponSkill())) {
+    if (task->m_pWeaponInfo == CWeaponInfo::GetWeaponInfo(ped->m_aWeapons[ped->m_nSelectedWepSlot].m_eWeaponType, ped->GetWeaponSkill())) {
         if (task->bRightHand) {
             bLeftHand = false;
             CallMethod<0x61EB10>(task, ped, false);
@@ -103,7 +103,8 @@ bool __fastcall Gunflashes::MyProcessUseGunTask(CTaskSimpleUseGun *task, int, CP
 void __fastcall Gunflashes::DoDriveByGunflash(CPed *driver, int, int, bool leftHand) {
     bLeftHand = leftHand;
     bVehicleGunflash = true;
-    MyTriggerGunflash(&g_fx, 0, driver, CVector(0.0f, 0.0f, 0.0f), CVector(0.0f, 0.0f, 0.0f), true);
+    CVector origin(0.0f, 0.0f, 0.0f), target(0.0f, 0.0f, 0.0f); // lvalues: the hook takes CVector&
+    MyTriggerGunflash(&g_fx, 0, driver, origin, target, true);
 }
 
 void __fastcall Gunflashes::MyTriggerGunflash(Fx_c *fx, int, CEntity *entity, CVector &origin, CVector &target, bool doGunflash) {
@@ -114,17 +115,17 @@ void __fastcall Gunflashes::MyTriggerGunflash(Fx_c *fx, int, CEntity *entity, CV
         pedExt.Get(owner).bInVehicle = bVehicleGunflash;
     }
     else {
-        if (DistanceBetweenPoints(target, origin) > 0.0f) {
+        if (CVector::Distance(target, origin) > 0.0f) {
             RwMatrix fxMat;
             fx->CreateMatFromVec(&fxMat, &origin, &target);
             RwV3d offset = { 0.0f, 0.0f, 0.0f };
-            FxSystem_c *gunflashFx = g_fxMan.CreateFxSystem("gunflash", &offset, &fxMat, false);
+            FxSystem_c *gunflashFx = g_fxMan.CreateFxSystem(const_cast<char *>("gunflash"), &offset, &fxMat, false);
 			if (MixSets::G_GunflashEmissionMult > -1.0f) gunflashFx->SetRateMult(MixSets::G_GunflashEmissionMult);
             if (gunflashFx) {
                 gunflashFx->CopyParentMatrix();
                 gunflashFx->PlayAndKill();
             }
-            FxSystem_c *smokeFx = g_fxMan.CreateFxSystem("gunsmoke", &offset, &fxMat, false);
+            FxSystem_c *smokeFx = g_fxMan.CreateFxSystem(const_cast<char *>("gunsmoke"), &offset, &fxMat, false);
             if (smokeFx) {
                 smokeFx->CopyParentMatrix();
                 smokeFx->PlayAndKill();
@@ -151,18 +152,18 @@ void Gunflashes::CreateGunflashEffectsForPed(CPed *ped) {
             if (ped->m_pRwObject && ped->m_pRwObject->type == rpCLUMP) {
                 bool rotate = true;
                 bool smoke = true;
-                char *fxName = "gunflash";
+                char *fxName = const_cast<char *>("gunflash");
                 /*for (GunflashInfo &info : gunflashInfos) {
-                    if (info.weapId == ped->m_aWeapons[ped->m_nActiveWeaponSlot].m_nType) {
+                    if (info.weapId == ped->m_aWeapons[ped->m_nSelectedWepSlot].m_eWeaponType) {
                         rotate = info.rotate;
                         smoke = info.smoke;
                         fxName = info.fxName;
                         break;
                     }
                 }*/
-                char weapSkill = ped->GetWeaponSkill(ped->m_aWeapons[ped->m_nActiveWeaponSlot].m_nType);
-                CWeaponInfo *weapInfo = CWeaponInfo::GetWeaponInfo(ped->m_aWeapons[ped->m_nActiveWeaponSlot].m_nType, weapSkill);
-                RwV3d offset = weapInfo->m_vecFireOffset.ToRwV3d();
+                char weapSkill = ped->GetWeaponSkill(ped->m_aWeapons[ped->m_nSelectedWepSlot].m_eWeaponType);
+                CWeaponInfo *weapInfo = CWeaponInfo::GetWeaponInfo(ped->m_aWeapons[ped->m_nSelectedWepSlot].m_eWeaponType, weapSkill);
+                RwV3d offset = weapInfo->m_vecFireOffset;
                 if (leftHand)
                     offset.z *= -1.0f;
                 static RwV3d axis_y = { 0.0f, 1.0f, 0.0f };
@@ -183,7 +184,7 @@ void Gunflashes::CreateGunflashEffectsForPed(CPed *ped) {
                 }
                 if (smoke) {
 					if (!ped->m_pVehicle || ped->m_pVehicle->m_vecMoveSpeed.Magnitude() < 0.15f) {
-						FxSystem_c *smokeFx = g_fxMan.CreateFxSystem("gunsmoke", &offset, mat, true);
+						FxSystem_c *smokeFx = g_fxMan.CreateFxSystem(const_cast<char *>("gunsmoke"), &offset, mat, true);
 						if (smokeFx) {
 							RwMatrixRotate(&smokeFx->m_localMatrix, &axis_z, -90.0f, rwCOMBINEPRECONCAT);
 							smokeFx->PlayAndKill();
