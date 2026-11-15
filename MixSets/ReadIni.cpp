@@ -983,7 +983,7 @@ void MixSets::ReadIni()
 		if (G_WaveLightingCamHei == -1.0f) G_WaveLightingCamHei = 0.0f;
 		if (G_WaveLightingMult == -1.0f) G_WaveLightingMult = 1.0f;
 		injector::MakeInline<0x6E7141, 0x6E7141 + 5>([](injector::reg_pack& regs) {
-			reinterpret_cast<CVector*>(regs.ecx)->Normalise(); // original code
+			reinterpret_cast<CVector*>(regs.ecx)->Normalize(); // original code
 			if (CGame::currArea == 0)
 			{
 				float camHeight = TheCamera.GetPosition().z;

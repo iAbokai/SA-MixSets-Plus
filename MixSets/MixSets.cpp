@@ -944,7 +944,7 @@ void __fastcall PreRender_AddSingleWheelParticles_FixDouble(CVehicle* _this, int
 		pos1.y = from->y;
 		pos1.z = from->z;
 
-		CMatrixLink* matrix = _this->GetMatrix();
+		CMatrixLink* matrix = &_this->GetMatrix();
 
 		pos1.x = matrix->right.x * distance;
 		pos1.y = matrix->right.y * distance;
