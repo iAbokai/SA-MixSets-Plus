@@ -188,7 +188,7 @@ MixSets::MixSets()
 
 					if (player)
 					{
-						if (player->m_nPedFlags.bInVehicle)
+						if (player->bInVehicle)
 						{
 							bPlayerRenderWeaponInVehicleLastFrame = true;
 							int camMode = TheCamera.m_aCams[0].m_nMode;
@@ -557,7 +557,7 @@ MixSets::MixSets()
 			{
 				if (vehicle->m_nModelIndex == MODEL_TAXI || vehicle->m_nModelIndex == MODEL_CABBIE)
 				{
-					if (vehicle->m_pDriver && vehicle->m_nNumPassengers == 0 && vehicle->m_nVehicleFlags.bEngineOn && vehicle->m_fHealth > 0.0f)
+					if (vehicle->m_pDriver && vehicle->m_nNumPassengers == 0 && vehicle->bEngineOn && vehicle->m_fHealth > 0.0f)
 					{
 						automobile->SetTaxiLight(true);
 					}
@@ -737,7 +737,7 @@ void MixSets::SetIdlePriority()
 
 void MixSets::ReadOldINI(CIniReader ini, fstream* lg, string section, string key)
 {
-	MixSets::bParsePreserveComments = true;
+	linb::bParsePreserveComments = true;
 
 	CIniReader iniold("MixSets old.ini");
 	string oldIniLine = iniold.ReadString(section, key, "");
@@ -749,7 +749,7 @@ void MixSets::ReadOldINI(CIniReader ini, fstream* lg, string section, string key
 		else
 			*lg << "Warning: " << section << ": " << key << " not found in 'MixSets old.ini'. If isn't new feature, then the name has changed in new version. Check it.\n";
 
-		MixSets::bParsePreserveComments = false;
+		linb::bParsePreserveComments = false;
 
 		MixSets::numOldCfgNotFound++;
 		return;
@@ -759,7 +759,7 @@ void MixSets::ReadOldINI(CIniReader ini, fstream* lg, string section, string key
 
 	string newIniLine = ininew.ReadString(section, key, "");
 
-	MixSets::bParsePreserveComments = false;
+	linb::bParsePreserveComments = false;
 
 	int newIniLineLen = newIniLine.find_first_of(" #");
 	int oldIniLineLen = oldIniLine.find_first_of(" #");
@@ -908,7 +908,7 @@ void MixSets::VehFlipDamage_Process(CVehicle* veh)
 		{
 			for (int i = 0; i < 8; ++i)
 			{
-				if (veh->m_apPassengers[i] > 0) MixSets::VehFlipDamage_Process_Damage(veh->m_apPassengers[i]);
+				if (veh->m_apPassengers[i] != nullptr) MixSets::VehFlipDamage_Process_Damage(veh->m_apPassengers[i]);
 			}
 		}
 	}

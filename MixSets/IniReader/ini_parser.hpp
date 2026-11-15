@@ -38,10 +38,11 @@
 #include <sstream>
 #include <fstream>
 
-#include "..\MixSets.h"
-
 namespace linb
 {
+    // Set by MixSets before parsing. Lives here (not in MixSets) to avoid a circular include.
+    inline bool bParsePreserveComments = false;
+
     template<
         class CharT = char,     /* Not compatible with other type here, since we're using C streams */
         class StringType = std::basic_string<CharT>,
@@ -247,7 +248,7 @@ namespace linb
 
 					// EDITED FOR MIXSETS - START
 
-					if (!MixSets::bParsePreserveComments) {
+					if (!bParsePreserveComments) {
 						if ((pos = line.find_first_of('#')) != line.npos)
 							line.erase(pos);
 
