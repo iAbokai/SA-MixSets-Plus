@@ -844,10 +844,16 @@ bool MixSets::IncreaseMemoryValueIfValid(uintptr_t address, int32_t value, uint8
 	if (ReadMemory<int32_t>(address, vp) < value) WriteMemory<int32_t>(address, value, vp);
 	return true;
 }
-bool MixSets::IncreaseMemoryValueIfValid_Byte(uintptr_t address, int8_t value, uint8_t validation, bool vp)
+bool MixSets::IncreaseMemoryValueIfValid_Byte(uintptr_t address, int32_t value, uint8_t validation, bool vp)
 {
 	if (ReadMemory<uint8_t>(address - 1, vp) != validation) return false;
-	if (ReadMemory<int8_t>(address, vp) < value) WriteMemory<int8_t>(address, value, vp);
+	// The target is the imm8 of a 'push imm8' (sign-extended), so 127 is the highest value it can hold.
+	// Previously 'value' was an int8_t, so e.g. 43 * 3 = 129 wrapped to -127 and the pool was silently left untouched.
+	if (value > 127) {
+		lg << "WARNING: value " << value << " does not fit in a byte; clamped to 127 (address 0x" << std::hex << address << std::dec << ")\n";
+		value = 127;
+	}
+	if (ReadMemory<int8_t>(address, vp) < value) WriteMemory<int8_t>(address, (int8_t)value, vp);
 	return true;
 }
 

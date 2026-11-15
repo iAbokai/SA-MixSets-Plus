@@ -92,7 +92,7 @@ public:
 	static bool ReadIniBool(CIniReader ini, fstream* lg, string section, string key);
 
 	static bool IncreaseMemoryValueIfValid(uintptr_t address, int32_t value, uint8_t validation, bool vp);
-	static bool IncreaseMemoryValueIfValid_Byte(uintptr_t address, int8_t value, uint8_t validation, bool vp);
+	static bool IncreaseMemoryValueIfValid_Byte(uintptr_t address, int32_t value, uint8_t validation, bool vp);
 	static uint8_t CustomMaxAnisotropic();
 	static void ForceHighMirrorRes_MirrorsCreateBuffer();
 
