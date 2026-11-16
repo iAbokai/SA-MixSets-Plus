@@ -21,7 +21,7 @@
 #include "CAEVehicleAudioEntity.h"
 #include "CAESound.h"
 #include "CPools.h"
-#include "CReferences.h"
+#include <cmath>
 #include <algorithm>
 #include <ctime>
 #include <sstream>
@@ -868,7 +868,8 @@ bool MixSets::IncreaseMemoryValueIfValid_Byte(uintptr_t address, int32_t value, 
 }
 
 // Optional diagnostic ([Experimental] LogAudioStats = 1): every 5 seconds, writes to MixSets.log how full the game's audio
-// structures are and which active sounds are the loudest. Meant to find out what saturates when the audio breaks after a while.
+// structures are, which active sounds are the loudest and who owns them, and whether data that should never change at runtime
+// (the per-event volume table and the vehicle-audio config floats) has been overwritten. Meant to find what breaks the audio over time.
 void MixSets::LogAudioStats()
 {
 	static DWORD lastLog = 0;
@@ -902,8 +903,6 @@ void MixSets::LogAudioStats()
 	if (CPools::ms_pVehiclePool) { vehUsed = (int)CPools::ms_pVehiclePool->GetNoOfUsedSpaces(); vehSize = CPools::ms_pVehiclePool->m_nSize; }
 	if (CPools::ms_pPedPool) { pedUsed = (int)CPools::ms_pPedPool->GetNoOfUsedSpaces(); pedSize = CPools::ms_pPedPool->m_nSize; }
 
-	int freeRefs = (int)CReferences::ListSize(*CReferences::pEmptyList);
-
 	std::time_t t = std::time(nullptr);
 	std::tm tmv;
 	localtime_s(&tmv, &t);
@@ -917,10 +916,34 @@ void MixSets::LogAudioStats()
 	  << " (frontEnd " << frontEnd << ", requestUpdates " << requestUpdates << ")"
 	  << " | engineBanksInUse " << dummyBanksInUse << "/10"
 	  << " | vehicles " << vehUsed << "/" << vehSize
-	  << " | peds " << pedUsed << "/" << pedSize
-	  << " | freeRefs " << freeRefs << "/3000\n";
+	  << " | peds " << pedUsed << "/" << pedSize << "\n";
 
-	// loudest sounds right now: bank slot / sound id / event id tell what the sound is; camDist shows how far from the camera it is
+	// Index of a sound inside the sound manager's array: -1 = none, -2 = points outside the array
+	auto soundIndex = [&](CAESound* p) -> int {
+		if (!p) return -1;
+		uintptr_t a = (uintptr_t)p, b = (uintptr_t)sounds;
+		if (a >= b && a < b + kNumSounds * sizeof(CAESound)) return (int)((a - b) / sizeof(CAESound));
+		return -2;
+	};
+
+	// The player's vehicle: its own base volume and the sounds it believes it owns
+	CVehicle* pv = FindPlayerVehicle(-1, false);
+	CAEAudioEntity* pvAudio = nullptr;
+	if (pv)
+	{
+		CAEVehicleAudioEntity& ae = pv->m_vehicleAudio;
+		pvAudio = &ae;
+		float spd = std::sqrt(pv->m_vecMoveSpeed.x * pv->m_vecMoveSpeed.x + pv->m_vecMoveSpeed.y * pv->m_vecMoveSpeed.y + pv->m_vecMoveSpeed.z * pv->m_vecMoveSpeed.z);
+		o << "    playerVeh model " << pv->m_nModelIndex << " speed " << spd
+		  << " eventVol " << ae.m_fGeneralVehicleSoundVolume
+		  << " | roadNoise type " << ae.m_nRoadNoiseSoundType << " slot " << soundIndex(ae.m_pRoadNoiseSound)
+		  << " | reverse type " << ae.m_nReverseGearSoundType << " slot " << soundIndex(ae.m_pReverseGearSound)
+		  << " | flatTyre type " << ae.m_nFlatTyreSoundType << " slot " << soundIndex(ae.m_pFlatTyreSound) << "\n";
+	}
+	else o << "    playerVeh none\n";
+
+	// Loudest sounds right now: bank slot / sfx / event tell what the sound is; camDist shows how far from the camera it is;
+	// owner shows whether it belongs to the player's vehicle audio, another audio entity, or nothing (an orphaned, never-updated sound)
 	for (size_t n = 0; n < active.size() && n < 5; n++)
 	{
 		CAESound& s = sounds[active[n]];
@@ -929,9 +952,31 @@ void MixSets::LogAudioStats()
 		  << " finalVol " << s.m_fFinalVolume << " vol " << s.m_fVolume
 		  << " camDist " << s.m_fCurrCamDist
 		  << " flags 0x" << std::hex << s.m_nEnvironmentFlags << std::dec
-		  << " entity " << (s.m_pBaseAudio ? "yes" : "NO")
+		  << " owner " << (!s.m_pBaseAudio ? "NONE" : (s.m_pBaseAudio == pvAudio ? "playerVeh" : "other"))
 		  << " physEnt " << (s.m_pPhysicalEntity ? "yes" : "no") << "\n";
 	}
+
+	// Watches for data that must not change at runtime. The first sample is the baseline; later samples report any byte that differs.
+	static std::vector<uint8_t> eventVolBase, cfgBase;
+	static const uint8_t* eventVolPtr = nullptr;
+	const size_t kEventVolSize = 45401;                                   // EVENTVOL.DAT, signed byte per audio event, heap allocated, pointer at 0xBD00F8
+	const uint8_t* eventVol = *(const uint8_t* const*)(uintptr_t)0xBD00F8;
+	const size_t kCfgSize = 0x300;
+	const uint8_t* cfg = (const uint8_t*)(uintptr_t)0x8CBB00;             // vehicle audio config floats (0x8CBC24 - 0x8CBD98) live in here
+	if (eventVol != eventVolPtr) { eventVolPtr = eventVol; eventVolBase.clear(); }
+	auto watch = [&](const char* name, const uint8_t* cur, std::vector<uint8_t>& base, size_t size) {
+		if (!cur) return;
+		if (base.size() != size) { base.assign(cur, cur + size); o << "    watch " << name << ": baseline taken\n"; return; }
+		size_t changed = 0;
+		std::ostringstream d;
+		for (size_t i = 0; i < size; i++)
+			if (cur[i] != base[i]) { if (changed < 8) d << " [+" << i << "] " << (int)(int8_t)base[i] << "->" << (int)(int8_t)cur[i]; changed++; }
+		if (changed) o << "    watch " << name << ": " << changed << " bytes CHANGED:" << d.str() << "\n";
+	};
+	watch("eventVolumeTable", eventVol, eventVolBase, kEventVolSize);
+	watch("vehicleAudioConfig@0x8CBB00", cfg, cfgBase, kCfgSize);
+	if (eventVol) o << "    eventVol[GENERAL_VEHICLE_SOUND=77] " << (int)(int8_t)eventVol[77] << " [WIND_RUSH=106] " << (int)(int8_t)eventVol[106] << "\n";
+
 	lg << o.str();
 	lg.flush();
 }
