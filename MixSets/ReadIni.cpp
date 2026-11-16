@@ -417,6 +417,11 @@ void MixSets::ReadIni_BeforeFirstFrame()
 		WriteMemory<uint32_t>(0xC402CF, 1, true);
 	}
 
+	if (ReadIniBool(ini, &lg, "Experimental", "LogAudioStats")) {
+		G_LogAudioStats = true;
+	}
+	else G_LogAudioStats = false;
+
 	lg.flush();
 }
 

@@ -18,6 +18,14 @@
 #include "CMessages.h"
 #include "CGame.h"
 #include "IMFX/Gunflashes.h"
+#include "CAEVehicleAudioEntity.h"
+#include "CAESound.h"
+#include "CPools.h"
+#include "CReferences.h"
+#include <algorithm>
+#include <ctime>
+#include <sstream>
+#include <vector>
 
 // Other
 #include "..\injector\assembly.hpp"
@@ -163,6 +171,8 @@ MixSets::MixSets()
 
 				Read = false;
 			}
+
+			if (G_LogAudioStats) LogAudioStats();
 
 			//////////////////////////////////////////////
 
@@ -855,6 +865,75 @@ bool MixSets::IncreaseMemoryValueIfValid_Byte(uintptr_t address, int32_t value, 
 	}
 	if (ReadMemory<int8_t>(address, vp) < value) WriteMemory<int8_t>(address, (int8_t)value, vp);
 	return true;
+}
+
+// Optional diagnostic ([Experimental] LogAudioStats = 1): every 5 seconds, writes to MixSets.log how full the game's audio
+// structures are and which active sounds are the loudest. Meant to find out what saturates when the audio breaks after a while.
+void MixSets::LogAudioStats()
+{
+	static DWORD lastLog = 0;
+	DWORD now = GetTickCount();
+	if (lastLog != 0 && (DWORD)(now - lastLog) < 5000) return;
+	lastLog = now ? now : 1;
+
+	// CAESoundManager is at 0xB62CB0: uint16 numPhysicalChannels; int16 audioHandle; CAESound sounds[300]; ...
+	const int kNumSounds = 300;
+	CAESound* sounds = (CAESound*)(uintptr_t)(0xB62CB0 + 4);
+
+	std::vector<int> active;
+	int frontEnd = 0, requestUpdates = 0;
+	for (int i = 0; i < kNumSounds; i++)
+	{
+		CAESound& s = sounds[i];
+		if (!s.m_nIsUsed) continue;
+		active.push_back(i);
+		if (s.m_nEnvironmentFlags & SOUND_FRONT_END) frontEnd++;
+		if (s.m_nEnvironmentFlags & SOUND_REQUEST_UPDATES) requestUpdates++;
+	}
+	// Loudest first. A NaN volume (corrupted sound) is ranked as the loudest so it can't be missed, and keeps the comparison a valid ordering.
+	auto volKey = [&](int i) { float v = sounds[i].m_fFinalVolume; return (v != v) ? 1.0e30f : v; };
+	std::sort(active.begin(), active.end(), [&](int a, int b) { return volKey(a) > volKey(b); });
+
+	int dummyBanksInUse = 0;
+	for (auto& slot : CAEVehicleAudioEntity::s_DummyEngineSlots)
+		if (slot.m_nUsageCount > 0) dummyBanksInUse++;
+
+	int vehUsed = 0, vehSize = 0, pedUsed = 0, pedSize = 0;
+	if (CPools::ms_pVehiclePool) { vehUsed = (int)CPools::ms_pVehiclePool->GetNoOfUsedSpaces(); vehSize = CPools::ms_pVehiclePool->m_nSize; }
+	if (CPools::ms_pPedPool) { pedUsed = (int)CPools::ms_pPedPool->GetNoOfUsedSpaces(); pedSize = CPools::ms_pPedPool->m_nSize; }
+
+	int freeRefs = (int)CReferences::ListSize(*CReferences::pEmptyList);
+
+	std::time_t t = std::time(nullptr);
+	std::tm tmv;
+	localtime_s(&tmv, &t);
+	char timeBuf[16];
+	std::strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &tmv);
+
+	std::ostringstream o;
+	o.setf(std::ios::fixed);
+	o.precision(1);
+	o << "[AudioStats " << timeBuf << "] sounds " << active.size() << "/" << kNumSounds
+	  << " (frontEnd " << frontEnd << ", requestUpdates " << requestUpdates << ")"
+	  << " | engineBanksInUse " << dummyBanksInUse << "/10"
+	  << " | vehicles " << vehUsed << "/" << vehSize
+	  << " | peds " << pedUsed << "/" << pedSize
+	  << " | freeRefs " << freeRefs << "/3000\n";
+
+	// loudest sounds right now: bank slot / sound id / event id tell what the sound is; camDist shows how far from the camera it is
+	for (size_t n = 0; n < active.size() && n < 5; n++)
+	{
+		CAESound& s = sounds[active[n]];
+		o << "    #" << n << " slot " << active[n]
+		  << " bank " << s.m_nBankSlotId << " sfx " << s.m_nSoundIdInSlot << " event " << s.m_nEvent
+		  << " finalVol " << s.m_fFinalVolume << " vol " << s.m_fVolume
+		  << " camDist " << s.m_fCurrCamDist
+		  << " flags 0x" << std::hex << s.m_nEnvironmentFlags << std::dec
+		  << " entity " << (s.m_pBaseAudio ? "yes" : "NO")
+		  << " physEnt " << (s.m_pPhysicalEntity ? "yes" : "no") << "\n";
+	}
+	lg << o.str();
+	lg.flush();
 }
 
 uint8_t MixSets::CustomMaxAnisotropic()

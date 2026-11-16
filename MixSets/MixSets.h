@@ -72,6 +72,7 @@ public:
 	static inline char G_NoMoneyZeros_Neg[5];
 
 	static inline CVehicle* secPlayerVehicle;
+	static inline bool G_LogAudioStats;
 
 	////////////////////////////////////////////////
 
@@ -101,6 +102,8 @@ public:
 	static void VehFlipDamage_Process_Damage(CPed* ped);
 
 	static void VehFlipDamage_Process(CVehicle* veh);
+
+	static void LogAudioStats();
 };
 
 void __fastcall PreRender_AddSingleWheelParticles_FixDouble(CVehicle* _this, int a, int wheelState, int a3, float a4, float a5, CColPoint* colPoint, CVector* from, int id, signed int wheelId, int skidMarkType, bool *_bloodState, char a12);
