@@ -1433,7 +1433,9 @@ void MixSets::ReadIni()
 	if (ReadIniBool(ini, &lg, "Gameplay", "FixTwoPlayerVehSound")) {
 		injector::MakeInline<0x4F570A, 0x4F570A + 6>([](injector::reg_pack& regs)
 		{
-			*(uint32_t*)(regs.esi + 0xA7) = 0; //mov     [esi+0A7h], bl
+			// Original instruction is a 1-byte write ('mov [esi+0A7h], bl'). It was being emulated with a 4-byte write, which also zeroed
+			// the three bytes after it (m_IsWreckedVehicle, m_State, m_AuGear) of every vehicle audio entity the player enters as driver.
+			*(uint8_t*)(regs.esi + 0xA7) = (uint8_t)regs.ebx; //mov     [esi+0A7h], bl
 			CVehicle* veh = (CVehicle*)regs.eax;
 			if (veh->m_pDriver == CWorld::Players[1].m_pPed) {
 				secPlayerVehicle = veh;
