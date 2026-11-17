@@ -21,6 +21,7 @@
 #include "CAEVehicleAudioEntity.h"
 #include "CAESound.h"
 #include "CPools.h"
+#include "CVisibilityPlugins.h"
 #include <cmath>
 #include <algorithm>
 #include <ctime>
@@ -865,6 +866,66 @@ bool MixSets::IncreaseMemoryValueIfValid_Byte(uintptr_t address, int32_t value, 
 	}
 	if (ReadMemory<int8_t>(address, vp) < value) WriteMemory<int8_t>(address, (int8_t)value, vp);
 	return true;
+}
+
+// Replacement for CVehicle::UpdateClumpAlpha (0x6D2980), installed when [Densities] VehFadeTime or VehFadeDist is set.
+// The original changes the clump alpha by a fixed +16 (fade in) or -8 (fade out) per *frame*. The spawn fade-in therefore lasts
+// 0.53 s at 30 FPS, 0.27 s at 60 FPS and 0.13 s at 120 FPS, so with a long draw distance (cars spawn inside the visible range) they
+// look like they pop in. This version:
+//  - steps the alpha by elapsed time (CTimer::ms_fTimeStep, 1/50 s units) so the fade lasts VehFadeTime seconds at any frame rate
+//    (fade out takes twice as long, same ratio as the original);
+//  - optionally (VehFadeDist > 0) caps the alpha near the distance where the game stops drawing vehicles
+//    (CVisibilityPlugins::ms_vehicleLod1Dist, a hard cut otherwise) so vehicles fade out/in over the last VehFadeDist metres.
+// No state is kept besides the clump alpha itself: the alpha follows its target every frame and vehicles are processed every frame.
+void __fastcall VehicleUpdateClumpAlpha_Smooth(CVehicle* _this, int)
+{
+	RpClump* clump = _this->m_pRwClump;
+	if (!clump) return;
+
+	int alpha = CVisibilityPlugins::GetClumpAlpha(clump);
+
+	const float perSecond = 255.0f / MixSets::G_VehFadeTime;
+	const float dt = CTimer::ms_fTimeStep * 0.02f;
+	int stepIn = (int)(perSecond * dt + 0.5f);
+	if (stepIn < 1) stepIn = 1;
+	int stepOut = (int)(perSecond * 0.5f * dt + 0.5f);
+	if (stepOut < 1) stepOut = 1;
+
+	if (_this->bFadeOut)
+	{
+		alpha -= stepOut;
+		if (alpha < 0) alpha = 0;
+	}
+	else if (alpha < 255)
+	{
+		alpha += stepIn;
+		if (alpha > 255) alpha = 255;
+	}
+
+	// Distance fade. Trains and the big fixed-wing planes are never distance culled by the game, and the vehicle the player is in is left alone.
+	if (MixSets::G_VehFadeDist > 0.0f && _this->m_nVehicleClass != VEHICLE_TRAIN && _this->m_nVehicleClass != VEHICLE_FPLANE
+		&& _this != FindPlayerVehicle(-1, false))
+	{
+		const float cullSq = CVisibilityPlugins::ms_vehicleLod1Dist; // squared distance beyond which vehicles are not drawn
+		if (cullSq > 1.0f)
+		{
+			const CVector& vehPos = _this->GetPosition();
+			const CVector& camPos = TheCamera.GetPosition();
+			const float dx = vehPos.x - camPos.x, dy = vehPos.y - camPos.y, dz = vehPos.z - camPos.z;
+			const float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+			const float cull = sqrtf(cullSq);
+			float band = MixSets::G_VehFadeDist;
+			if (band > cull) band = cull;
+			if (dist >= cull) alpha = 0;
+			else if (dist > cull - band)
+			{
+				int target = (int)(255.0f * (cull - dist) / band);
+				if (alpha > target) alpha = target;
+			}
+		}
+	}
+
+	CVisibilityPlugins::SetClumpAlpha(clump, alpha);
 }
 
 // Optional diagnostic ([Experimental] LogAudioStats = 1): every 5 seconds, writes to MixSets.log how full the game's audio

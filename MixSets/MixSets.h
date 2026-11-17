@@ -73,6 +73,7 @@ public:
 
 	static inline CVehicle* secPlayerVehicle;
 	static inline bool G_LogAudioStats;
+	static inline float G_VehFadeTime, G_VehFadeDist;
 
 	////////////////////////////////////////////////
 
@@ -107,6 +108,7 @@ public:
 };
 
 void __fastcall PreRender_AddSingleWheelParticles_FixDouble(CVehicle* _this, int a, int wheelState, int a3, float a4, float a5, CColPoint* colPoint, CVector* from, int id, signed int wheelId, int skidMarkType, bool *_bloodState, char a12);
+void __fastcall VehicleUpdateClumpAlpha_Smooth(CVehicle* _this, int);
 void __declspec() PedWeaponDrawDist_ASM();
 void __declspec() PedWeaponDrawDist_ASM();
 void __declspec() VehFlipDamage_ASM();

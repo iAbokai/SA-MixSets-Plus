@@ -1714,6 +1714,22 @@ void MixSets::ReadIni()
 				WriteMemory<float>(0x4250E2, f, true);
 			}
 
+			// Vehicle fade (spawn pop-in). Replaces CVehicle::UpdateClumpAlpha in the three places the game calls it (automobiles, bikes, boats).
+			// VehFadeTime: seconds a newly spawned vehicle takes to fade in (the game's own fade is per frame: 0.53 s at 30 FPS, 0.27 s at 60 FPS).
+			// VehFadeDist: metres before the vehicle draw distance over which vehicles fade out/in instead of being cut instantly.
+			{
+				float fadeTime = -1.0f, fadeDist = -1.0f;
+				const bool hasFadeTime = ReadIniFloat(ini, &lg, "Densities", "VehFadeTime", &fadeTime) && fadeTime > 0.0f;
+				const bool hasFadeDist = ReadIniFloat(ini, &lg, "Densities", "VehFadeDist", &fadeDist) && fadeDist > 0.0f;
+				if (hasFadeTime || hasFadeDist) {
+					G_VehFadeTime = hasFadeTime ? fadeTime : 0.53f;
+					G_VehFadeDist = hasFadeDist ? fadeDist : 0.0f;
+					patch::RedirectCall(0x6B19F2, VehicleUpdateClumpAlpha_Smooth); // CAutomobile::ProcessControl
+					patch::RedirectCall(0x6B92F5, VehicleUpdateClumpAlpha_Smooth); // CBike::ProcessControl
+					patch::RedirectCall(0x6F185D, VehicleUpdateClumpAlpha_Smooth); // CBoat::ProcessControl
+				}
+			}
+
 			if (ReadIniFloat(ini, &lg, "Densities", "PedDespawnOnScr", &f)) {
 				G_PedDespawnOnScr = f;
 				WriteMemory<float*>(0x6120FF, &G_PedDespawnOnScr, true);
