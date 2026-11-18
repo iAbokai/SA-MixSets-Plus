@@ -74,6 +74,7 @@ public:
 	static inline CVehicle* secPlayerVehicle;
 	static inline bool G_LogAudioStats;
 	static inline float G_VehFadeTime, G_VehFadeDist;
+	static inline bool G_FixStaleVehSounds;
 
 	////////////////////////////////////////////////
 
@@ -105,6 +106,8 @@ public:
 	static void VehFlipDamage_Process(CVehicle* veh);
 
 	static void LogAudioStats();
+	static void FixStaleVehicleSounds();
+	static void InstallVehFadeHiDetail();
 };
 
 void __fastcall PreRender_AddSingleWheelParticles_FixDouble(CVehicle* _this, int a, int wheelState, int a3, float a4, float a5, CColPoint* colPoint, CVector* from, int id, signed int wheelId, int skidMarkType, bool *_bloodState, char a12);

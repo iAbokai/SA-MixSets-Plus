@@ -174,6 +174,7 @@ MixSets::MixSets()
 			}
 
 			if (G_LogAudioStats) LogAudioStats();
+			if (G_FixStaleVehSounds) FixStaleVehicleSounds(); // after LogAudioStats, so the log shows what was stale before it gets cleared
 
 			//////////////////////////////////////////////
 
@@ -868,6 +869,69 @@ bool MixSets::IncreaseMemoryValueIfValid_Byte(uintptr_t address, int32_t value, 
 	return true;
 }
 
+// ---- Vehicle fade inside the high-detail range ------------------------------------------------------------------------------------
+// The game applies a vehicle's clump alpha (the fade-in when traffic spawns, the fade-out when it despawns) in only one place:
+// RenderVehicleReallyLowDetailCB, the callback of the low-detail "_vlo" model used beyond VehLodDist. The callbacks of the high-detail
+// model (RenderVehicleHiDetailCB 0x733240, RenderVehicleHiDetailAlphaCB 0x733F80 and RenderWheelAtomicCB 0x7323C0) ignore the alpha.
+// Vanilla traffic always spawns beyond the low-detail distance (>= 120 m on screen, against 99 m for the default VehLodDist), so there the fade
+// always shows. Raising VehLodDist above the spawn distance makes new cars spawn inside the high-detail range, where nothing fades them: they just appear.
+// These replacements render a high-detail atomic with the clump alpha applied exactly like the low-detail callback does (single pass,
+// RenderAtomicWithAlpha), and render it normally when the alpha is 255, so fully visible vehicles are drawn as before.
+static uintptr_t G_VehFadeOrigRender[3]; // original call targets at the three call sites (normally RpAtomic default render, 0x7491C0)
+static uintptr_t G_VehFadeOrigListCB;    // original alpha-list callback (normally CVisibilityPlugins::RenderAtomic, 0x732B30)
+
+static inline int VehFade_GetAlpha(RpAtomic* atomic)
+{
+	RpClump* clump = atomic->clump;
+	return clump ? CVisibilityPlugins::GetClumpAlpha(clump) : 255;
+}
+
+static inline void VehFade_RenderWithAlpha(RpAtomic* atomic, int alpha)
+{
+	// Same as the low-detail callback: render without the extra (reflection) passes, then put the flag back the way it was
+	const bool hadFlag = (CVisibilityPlugins::GetAtomicId(atomic) & 0x2000) != 0;
+	if (!hadFlag) CVisibilityPlugins::SetAtomicFlag(atomic, (unsigned short)0x2000);
+	((void(__cdecl*)(RpAtomic*, int))0x732480)(atomic, alpha); // CVisibilityPlugins::RenderAtomicWithAlpha
+	if (!hadFlag) CVisibilityPlugins::ClearAtomicFlag(atomic, (unsigned short)0x2000);
+}
+
+template<int Site>
+static RpAtomic* __cdecl VehFade_RenderAtomic(RpAtomic* atomic)
+{
+	const int alpha = VehFade_GetAlpha(atomic);
+	if (alpha >= 255) return ((RpAtomic*(__cdecl*)(RpAtomic*))G_VehFadeOrigRender[Site])(atomic);
+	VehFade_RenderWithAlpha(atomic, alpha);
+	return atomic;
+}
+
+static void __cdecl VehFade_RenderListAtomic(void* obj, float dist)
+{
+	RpAtomic* atomic = (RpAtomic*)obj;
+	const int alpha = VehFade_GetAlpha(atomic);
+	if (alpha >= 255) { ((void(__cdecl*)(void*, float))G_VehFadeOrigListCB)(obj, dist); return; }
+	VehFade_RenderWithAlpha(atomic, alpha);
+}
+
+static void VehFade_HookCall(uintptr_t address, int site, void* replacement)
+{
+	if (*(uint8_t*)address != 0xE8) return; // not the expected call (another mod changed it or different exe): leave it alone
+	G_VehFadeOrigRender[site] = address + 5 + *(int32_t*)(address + 1);
+	plugin::patch::RedirectCall(address, replacement);
+}
+
+void MixSets::InstallVehFadeHiDetail()
+{
+	VehFade_HookCall(0x733316, 0, (void*)&VehFade_RenderAtomic<0>); // RenderVehicleHiDetailCB: draw
+	VehFade_HookCall(0x73409C, 1, (void*)&VehFade_RenderAtomic<1>); // RenderVehicleHiDetailAlphaCB: draw when the alpha list is full
+	VehFade_HookCall(0x7323C6, 2, (void*)&VehFade_RenderAtomic<2>); // RenderWheelAtomicCB
+
+	// RenderVehicleHiDetailAlphaCB queues the atomic in the sorted alpha list with a callback that draws it later: "mov [esp+10h], offset RenderAtomic"
+	if (*(uint8_t*)0x73406A == 0xC7 && *(uint8_t*)0x73406B == 0x44 && *(uint8_t*)0x73406C == 0x24 && *(uint8_t*)0x73406D == 0x10) {
+		G_VehFadeOrigListCB = *(uint32_t*)0x73406E;
+		WriteMemory<uint32_t>(0x73406E, (uint32_t)(uintptr_t)&VehFade_RenderListAtomic, true);
+	}
+}
+
 // Replacement for CVehicle::UpdateClumpAlpha (0x6D2980), installed when [Densities] VehFadeTime or VehFadeDist is set.
 // The original changes the clump alpha by a fixed +16 (fade in) or -8 (fade out) per *frame*. The spawn fade-in therefore lasts
 // 0.53 s at 30 FPS, 0.27 s at 60 FPS and 0.13 s at 120 FPS, so with a long draw distance (cars spawn inside the visible range) they
@@ -926,6 +990,116 @@ void __fastcall VehicleUpdateClumpAlpha_Smooth(CVehicle* _this, int)
 	}
 
 	CVisibilityPlugins::SetClumpAlpha(clump, alpha);
+}
+
+// ---- Vehicle audio: sound pointers that no longer point at the sound they were made for ----
+// Every CAEVehicleAudioEntity keeps raw pointers into the sound manager's array of 300 sounds (engine sounds, road noise, reverse gear,
+// flat tyre, horn, sirens) and writes its volume and pitch through them every frame. The game clears them when the sound ends, but if one
+// is ever left behind, the entity keeps "updating" whatever sound is in that slot now: another vehicle's engine, footsteps, gunfire...
+// All of them end up with that entity's volume. This is what makes random sounds suddenly jump to a fixed loud level.
+namespace
+{
+	const int kAESoundCount = 300;
+
+	struct VehSoundField
+	{
+		const char* name;
+		CAESound**  ptr;
+		short*      type;    // road noise / flat tyre / reverse gear remember which sfx they play (always in bank slot 19, VEHICLE_GEN)
+		bool        generic;
+	};
+
+	CAESound* AESoundsBase() { return (CAESound*)(uintptr_t)(0xB62CB0 + 4); }
+
+	int GetVehicleSoundFields(CAEVehicleAudioEntity& ae, VehSoundField* out)
+	{
+		int n = 0;
+		for (int i = 0; i < 12; i++) out[n++] = { "engine", &ae.m_aEngineSounds[i].m_pSound, nullptr, false };
+		out[n++] = { "roadNoise", &ae.m_pRoadNoiseSound, &ae.m_nRoadNoiseSoundType, true };
+		out[n++] = { "flatTyre", &ae.m_pFlatTyreSound, &ae.m_nFlatTyreSoundType, true };
+		out[n++] = { "reverse", &ae.m_pReverseGearSound, &ae.m_nReverseGearSoundType, true };
+		out[n++] = { "horn", &ae.m_pHornTonSound, nullptr, false };
+		out[n++] = { "siren", &ae.m_pSirenSound, nullptr, false };
+		out[n++] = { "policeSiren", &ae.m_pPoliceSirenSound, nullptr, false };
+		return n;
+	}
+
+	// 0 = fine. Otherwise why this pointer cannot be a live sound that belongs to this audio entity:
+	// 1 = not a sound of the sound manager, 2 = that slot was freed, 3 = the slot now belongs to another audio entity,
+	// 4 = the slot holds a different sound than the one this pointer was made for
+	int CheckVehicleSoundPtr(const VehSoundField& f, CAEAudioEntity* owner)
+	{
+		CAESound* p = *f.ptr;
+		if (!p) return 0;
+		uintptr_t a = (uintptr_t)p, b = (uintptr_t)AESoundsBase();
+		if (a < b || a >= b + kAESoundCount * sizeof(CAESound) || (a - b) % sizeof(CAESound) != 0) return 1;
+		if (!p->m_nIsUsed) return 2;
+		if (p->m_pBaseAudio != owner) return 3;
+		if (f.generic && (p->m_nBankSlotId != 19 || p->m_nSoundIdInSlot != *f.type)) return 4;
+		return 0;
+	}
+
+	const char* StaleReasonName(int why)
+	{
+		switch (why)
+		{
+		case 1: return "not a sound slot";
+		case 2: return "slot freed";
+		case 3: return "slot owned by another audio entity";
+		case 4: return "slot holds a different sound";
+		case 5: return "same slot as the entity's own road/reverse/flat-tyre sound";
+		}
+		return "?";
+	}
+}
+
+// [Audio] FixStaleVehSounds = 1: once per frame, drops vehicle audio pointers that no longer point at their own sound (see above).
+void MixSets::FixStaleVehicleSounds()
+{
+	auto* pool = CPools::ms_pVehiclePool;
+	if (!pool) return;
+
+	static int logged = 0;
+	static unsigned totalCleared = 0;
+
+	for (int i = 0; i < pool->m_nSize; i++)
+	{
+		CVehicle* veh = pool->GetAt(i);
+		if (!veh) continue;
+
+		CAEVehicleAudioEntity& ae = veh->m_vehicleAudio;
+		CAEAudioEntity* owner = &ae;
+		VehSoundField f[20];
+		const int n = GetVehicleSoundFields(ae, f);
+
+		for (int k = 0; k < n; k++)
+		{
+			int why = CheckVehicleSoundPtr(f[k], owner);
+			// An engine entry pointing at the very sound the entity also keeps as road noise / reverse gear / flat tyre can only be a leftover
+			if (!why && !f[k].generic && f[k].ptr && *f[k].ptr)
+			{
+				for (int j = 0; j < n; j++)
+					if (f[j].generic && *f[j].ptr == *f[k].ptr) { why = 5; break; }
+			}
+			if (!why) continue;
+
+			CAESound* s = *f[k].ptr;
+			if (logged < 100)
+			{
+				logged++;
+				lg << "[FixStaleVehSounds] vehicle model " << veh->m_nModelIndex << " field " << f[k].name << " pointed at slot ";
+				if (why == 1) lg << "(outside the sound array)";
+				else lg << (int)(((uintptr_t)s - (uintptr_t)AESoundsBase()) / sizeof(CAESound)) << " (bank " << s->m_nBankSlotId << " sfx " << s->m_nSoundIdInSlot
+					<< " vol " << s->m_fVolume << ")";
+				lg << ": " << StaleReasonName(why) << ", cleared\n";
+				lg.flush();
+			}
+			*f[k].ptr = nullptr;
+			if (f[k].type) *f[k].type = -1; // so the entity asks for a fresh sound next frame
+			totalCleared++;
+		}
+	}
+	(void)totalCleared;
 }
 
 // Optional diagnostic ([Experimental] LogAudioStats = 1): every 5 seconds, writes to MixSets.log how full the game's audio
@@ -1003,6 +1177,69 @@ void MixSets::LogAudioStats()
 	}
 	else o << "    playerVeh none\n";
 
+	// Which vehicle audio entities hold a pointer to a given sound, and whether that holder is the sound's owner. A holder that is not
+	// the owner is a stale pointer: that entity keeps writing its volume into a sound that is not its own.
+	auto* vpool = CPools::ms_pVehiclePool;
+	auto holdersOf = [&](CAESound* snd) {
+		std::ostringstream h;
+		int shown = 0;
+		if (vpool)
+		{
+			for (int i = 0; i < vpool->m_nSize; i++)
+			{
+				CVehicle* v = vpool->GetAt(i);
+				if (!v) continue;
+				VehSoundField f[20];
+				const int n = GetVehicleSoundFields(v->m_vehicleAudio, f);
+				for (int k = 0; k < n; k++)
+				{
+					if (*f[k].ptr != snd) continue;
+					if (shown++ < 6)
+						h << " [veh model " << v->m_nModelIndex << (v == pv ? " (player)" : "") << " " << f[k].name
+						  << (snd->m_pBaseAudio == &v->m_vehicleAudio ? " owner" : " NOT-OWNER") << "]";
+				}
+			}
+		}
+		if (!shown) h << " nobody";
+		return h.str();
+	};
+
+	// Every sound pointer the player's vehicle has set (slot index), flagged when it can't be a live sound of its own
+	if (pv)
+	{
+		VehSoundField f[20];
+		const int n = GetVehicleSoundFields(pv->m_vehicleAudio, f);
+		o << "    playerVeh sound pointers:";
+		for (int k = 0; k < n; k++)
+		{
+			if (!*f[k].ptr) continue;
+			int why = CheckVehicleSoundPtr(f[k], pvAudio);
+			o << " " << f[k].name << "->" << soundIndex(*f[k].ptr) << (why ? " (STALE: " : "") << (why ? StaleReasonName(why) : "") << (why ? ")" : "");
+		}
+		o << "\n";
+	}
+
+	// Stale pointers across all vehicles right now (FixStaleVehSounds clears them every frame; this is sampled before it runs)
+	if (vpool)
+	{
+		int stale = 0;
+		std::ostringstream st;
+		for (int i = 0; i < vpool->m_nSize; i++)
+		{
+			CVehicle* v = vpool->GetAt(i);
+			if (!v) continue;
+			VehSoundField f[20];
+			const int n = GetVehicleSoundFields(v->m_vehicleAudio, f);
+			for (int k = 0; k < n; k++)
+			{
+				int why = CheckVehicleSoundPtr(f[k], &v->m_vehicleAudio);
+				if (!why) continue;
+				if (stale++ < 4) st << " [model " << v->m_nModelIndex << " " << f[k].name << " slot " << soundIndex(*f[k].ptr) << ": " << StaleReasonName(why) << "]";
+			}
+		}
+		o << "    staleVehicleSoundPointers " << stale << st.str() << "\n";
+	}
+
 	// Loudest sounds right now: bank slot / sfx / event tell what the sound is; camDist shows how far from the camera it is;
 	// owner shows whether it belongs to the player's vehicle audio, another audio entity, or nothing (an orphaned, never-updated sound)
 	for (size_t n = 0; n < active.size() && n < 5; n++)
@@ -1014,7 +1251,20 @@ void MixSets::LogAudioStats()
 		  << " camDist " << s.m_fCurrCamDist
 		  << " flags 0x" << std::hex << s.m_nEnvironmentFlags << std::dec
 		  << " owner " << (!s.m_pBaseAudio ? "NONE" : (s.m_pBaseAudio == pvAudio ? "playerVeh" : "other"))
-		  << " physEnt " << (s.m_pPhysicalEntity ? "yes" : "no") << "\n";
+		  << " physEnt " << (s.m_pPhysicalEntity ? "yes" : "no") << " | heldBy" << holdersOf(&s) << "\n";
+	}
+
+	// Any other sound with a positive volume (normal sounds are at or below 0 dB, except aircraft)
+	{
+		int shown = 0;
+		for (size_t n = 5; n < active.size() && shown < 6; n++)
+		{
+			CAESound& s = sounds[active[n]];
+			if (!(s.m_fVolume > 0.5f)) continue;
+			shown++;
+			o << "    +vol slot " << active[n] << " bank " << s.m_nBankSlotId << " sfx " << s.m_nSoundIdInSlot << " vol " << s.m_fVolume
+			  << " finalVol " << s.m_fFinalVolume << " camDist " << s.m_fCurrCamDist << " heldBy" << holdersOf(&s) << "\n";
+		}
 	}
 
 	// Watches for data that must not change at runtime. The first sample is the baseline; later samples report any byte that differs.

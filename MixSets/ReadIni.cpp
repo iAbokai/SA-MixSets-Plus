@@ -1721,12 +1721,18 @@ void MixSets::ReadIni()
 				float fadeTime = -1.0f, fadeDist = -1.0f;
 				const bool hasFadeTime = ReadIniFloat(ini, &lg, "Densities", "VehFadeTime", &fadeTime) && fadeTime > 0.0f;
 				const bool hasFadeDist = ReadIniFloat(ini, &lg, "Densities", "VehFadeDist", &fadeDist) && fadeDist > 0.0f;
+				// VehSpawnFade: (0|1) make vehicles inside the high-detail range (VehLodDist) fade too. The game only fades the low-detail model, so with a
+				// VehLodDist above the distance where traffic spawns, cars appear instantly instead of fading in. Also enabled by VehFadeTime and VehFadeDist.
+				const bool hasSpawnFade = ReadIniBool(ini, &lg, "Densities", "VehSpawnFade");
 				if (hasFadeTime || hasFadeDist) {
 					G_VehFadeTime = hasFadeTime ? fadeTime : 0.53f;
 					G_VehFadeDist = hasFadeDist ? fadeDist : 0.0f;
 					patch::RedirectCall(0x6B19F2, VehicleUpdateClumpAlpha_Smooth); // CAutomobile::ProcessControl
 					patch::RedirectCall(0x6B92F5, VehicleUpdateClumpAlpha_Smooth); // CBike::ProcessControl
 					patch::RedirectCall(0x6F185D, VehicleUpdateClumpAlpha_Smooth); // CBoat::ProcessControl
+				}
+				if (hasFadeTime || hasFadeDist || hasSpawnFade) {
+					InstallVehFadeHiDetail();
 				}
 			}
 
@@ -2059,6 +2065,10 @@ void MixSets::ReadIni()
 		MakeJMP(0x004F9DA4, SirenOnWithoutDriver_ASM, true);
 		MakeNOP(0x004F9DA9, 5, true);
 	}
+	if (ReadIniBool(ini, &lg, "Audio", "FixStaleVehSounds")) {
+		G_FixStaleVehSounds = true;
+	}
+	else G_FixStaleVehSounds = false;
 
 
 
