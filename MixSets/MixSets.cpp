@@ -22,6 +22,7 @@
 #include "CAESound.h"
 #include "CPools.h"
 #include "CVisibilityPlugins.h"
+#include "CWorld.h"
 #include <cmath>
 #include <algorithm>
 #include <ctime>
@@ -932,14 +933,45 @@ void MixSets::InstallVehFadeHiDetail()
 	}
 }
 
-// Replacement for CVehicle::UpdateClumpAlpha (0x6D2980), installed when [Densities] VehFadeTime or VehFadeDist is set.
+// True when the vehicle can't be seen from the camera right now: outside the view frustum, or every one of a few rays from the camera to the
+// vehicle (centre, roof, left and right of it) is blocked by buildings/objects. Biased towards "visible": a single clear ray is enough, see-through
+// surfaces (fences, glass) and objects the game's own camera ignores (lamp posts, signs...) never block, and the other vehicles/peds don't count.
+static bool VehFade_IsHiddenFromView(CVehicle* veh, const CVector& camPos)
+{
+	CVector centre = veh->GetBoundCentre();
+	const float radius = veh->GetBoundRadius();
+	if (!TheCamera.IsSphereVisible(centre, radius))
+		return true;
+
+	CVector dir = centre - camPos;
+	const float flat = sqrtf(dir.x * dir.x + dir.y * dir.y);
+	// horizontal unit vector perpendicular to the view direction (any direction when looking straight up/down)
+	CVector side = flat > 0.001f ? CVector(-dir.y / flat, dir.x / flat, 0.0f) : CVector(1.0f, 0.0f, 0.0f);
+	const float lateral = radius * 0.7f;
+	const CVector targets[4] = {
+		centre,
+		CVector(centre.x, centre.y, centre.z + radius * 0.6f),
+		CVector(centre.x + side.x * lateral, centre.y + side.y * lateral, centre.z),
+		CVector(centre.x - side.x * lateral, centre.y - side.y * lateral, centre.z)
+	};
+	for (const CVector& target : targets)
+	{
+		if (CWorld::GetIsLineOfSightClear(camPos, target, true, false, false, true, false, true, true))
+			return false;
+	}
+	return true;
+}
+
+// Replacement for CVehicle::UpdateClumpAlpha (0x6D2980), installed when [Densities] VehFadeTime, VehFadeDist, VehFadeSkipNear or VehFadeSkipHidden is set.
 // The original changes the clump alpha by a fixed +16 (fade in) or -8 (fade out) per *frame*. The spawn fade-in therefore lasts
 // 0.53 s at 30 FPS, 0.27 s at 60 FPS and 0.13 s at 120 FPS, so with a long draw distance (cars spawn inside the visible range) they
 // look like they pop in. This version:
 //  - steps the alpha by elapsed time (CTimer::ms_fTimeStep, 1/50 s units) so the fade lasts VehFadeTime seconds at any frame rate
 //    (fade out takes twice as long, same ratio as the original);
 //  - optionally (VehFadeDist > 0) caps the alpha near the distance where the game stops drawing vehicles
-//    (CVisibilityPlugins::ms_vehicleLod1Dist, a hard cut otherwise) so vehicles fade out/in over the last VehFadeDist metres.
+//    (CVisibilityPlugins::ms_vehicleLod1Dist, a hard cut otherwise) so vehicles fade out/in over the last VehFadeDist metres;
+//  - optionally skips the fade-in where it can't be (or shouldn't be) noticed: closer than VehFadeSkipNear metres to the camera, or (VehFadeSkipHidden)
+//    while the vehicle is out of view or hidden behind buildings/objects, so it is already solid when it comes into view.
 // No state is kept besides the clump alpha itself: the alpha follows its target every frame and vehicles are processed every frame.
 void __fastcall VehicleUpdateClumpAlpha_Smooth(CVehicle* _this, int)
 {
@@ -955,6 +987,33 @@ void __fastcall VehicleUpdateClumpAlpha_Smooth(CVehicle* _this, int)
 	int stepOut = (int)(perSecond * 0.5f * dt + 0.5f);
 	if (stepOut < 1) stepOut = 1;
 
+	// Trains and the big fixed-wing planes are never distance culled by the game, and the vehicle the player is in is left alone.
+	const bool distanceChecks = (MixSets::G_VehFadeDist > 0.0f || MixSets::G_VehFadeSkipNear > 0.0f || MixSets::G_VehFadeSkipHidden)
+		&& _this->m_nVehicleClass != VEHICLE_TRAIN && _this->m_nVehicleClass != VEHICLE_FPLANE && _this != FindPlayerVehicle(-1, false);
+	float dist = 0.0f;
+	if (distanceChecks)
+	{
+		const CVector& vehPos = _this->GetPosition();
+		const CVector& camPos = TheCamera.GetPosition();
+		const float dx = vehPos.x - camPos.x, dy = vehPos.y - camPos.y, dz = vehPos.z - camPos.z;
+		dist = sqrtf(dx * dx + dy * dy + dz * dz);
+	}
+
+	// Distance fade band (VehFadeDist): alpha is capped between (cull - band) and cull, where cull is the distance the game stops drawing vehicles.
+	bool inBand = false;
+	float cull = 0.0f, band = 0.0f;
+	if (distanceChecks && MixSets::G_VehFadeDist > 0.0f)
+	{
+		const float cullSq = CVisibilityPlugins::ms_vehicleLod1Dist; // squared distance beyond which vehicles are not drawn
+		if (cullSq > 1.0f)
+		{
+			cull = sqrtf(cullSq);
+			band = MixSets::G_VehFadeDist;
+			if (band > cull) band = cull;
+			inBand = dist > cull - band;
+		}
+	}
+
 	if (_this->bFadeOut)
 	{
 		alpha -= stepOut;
@@ -964,28 +1023,26 @@ void __fastcall VehicleUpdateClumpAlpha_Smooth(CVehicle* _this, int)
 	{
 		alpha += stepIn;
 		if (alpha > 255) alpha = 255;
+
+		// Skip the spawn fade-in: very close to the camera, or (checked every third frame per vehicle, it is the only costly part) not visible.
+		// Vehicles inside the distance band are left to the distance fade.
+		if (alpha < 255 && distanceChecks && !inBand)
+		{
+			if (MixSets::G_VehFadeSkipNear > 0.0f && dist < MixSets::G_VehFadeSkipNear)
+				alpha = 255;
+			else if (MixSets::G_VehFadeSkipHidden && (CTimer::m_FrameCounter + _this->m_nRandomSeed) % 3 == 0
+				&& VehFade_IsHiddenFromView(_this, TheCamera.GetPosition()))
+				alpha = 255;
+		}
 	}
 
-	// Distance fade. Trains and the big fixed-wing planes are never distance culled by the game, and the vehicle the player is in is left alone.
-	if (MixSets::G_VehFadeDist > 0.0f && _this->m_nVehicleClass != VEHICLE_TRAIN && _this->m_nVehicleClass != VEHICLE_FPLANE
-		&& _this != FindPlayerVehicle(-1, false))
+	if (inBand)
 	{
-		const float cullSq = CVisibilityPlugins::ms_vehicleLod1Dist; // squared distance beyond which vehicles are not drawn
-		if (cullSq > 1.0f)
+		if (dist >= cull) alpha = 0;
+		else
 		{
-			const CVector& vehPos = _this->GetPosition();
-			const CVector& camPos = TheCamera.GetPosition();
-			const float dx = vehPos.x - camPos.x, dy = vehPos.y - camPos.y, dz = vehPos.z - camPos.z;
-			const float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-			const float cull = sqrtf(cullSq);
-			float band = MixSets::G_VehFadeDist;
-			if (band > cull) band = cull;
-			if (dist >= cull) alpha = 0;
-			else if (dist > cull - band)
-			{
-				int target = (int)(255.0f * (cull - dist) / band);
-				if (alpha > target) alpha = target;
-			}
+			int target = (int)(255.0f * (cull - dist) / band);
+			if (alpha > target) alpha = target;
 		}
 	}
 

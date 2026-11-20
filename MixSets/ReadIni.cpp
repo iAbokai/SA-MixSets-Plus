@@ -1717,21 +1717,27 @@ void MixSets::ReadIni()
 			// Vehicle fade (spawn pop-in). Replaces CVehicle::UpdateClumpAlpha in the three places the game calls it (automobiles, bikes, boats).
 			// VehFadeTime: seconds a newly spawned vehicle takes to fade in (the game's own fade is per frame: 0.53 s at 30 FPS, 0.27 s at 60 FPS).
 			// VehFadeDist: metres before the vehicle draw distance over which vehicles fade out/in instead of being cut instantly.
+			// VehFadeSkipNear: vehicles closer than this many metres to the camera appear at once, without the fade-in (0 = always fade).
+			// VehFadeSkipHidden: (0|1) vehicles that spawn (or are) out of view or hidden behind buildings/objects skip the fade-in, so they are solid when seen.
 			{
-				float fadeTime = -1.0f, fadeDist = -1.0f;
+				float fadeTime = -1.0f, fadeDist = -1.0f, skipNear = -1.0f;
 				const bool hasFadeTime = ReadIniFloat(ini, &lg, "Densities", "VehFadeTime", &fadeTime) && fadeTime > 0.0f;
 				const bool hasFadeDist = ReadIniFloat(ini, &lg, "Densities", "VehFadeDist", &fadeDist) && fadeDist > 0.0f;
+				const bool hasSkipNear = ReadIniFloat(ini, &lg, "Densities", "VehFadeSkipNear", &skipNear) && skipNear > 0.0f;
+				const bool hasSkipHidden = ReadIniBool(ini, &lg, "Densities", "VehFadeSkipHidden");
 				// VehSpawnFade: (0|1) make vehicles inside the high-detail range (VehLodDist) fade too. The game only fades the low-detail model, so with a
-				// VehLodDist above the distance where traffic spawns, cars appear instantly instead of fading in. Also enabled by VehFadeTime and VehFadeDist.
+				// VehLodDist above the distance where traffic spawns, cars appear instantly instead of fading in. Also enabled by the other VehFade* keys.
 				const bool hasSpawnFade = ReadIniBool(ini, &lg, "Densities", "VehSpawnFade");
-				if (hasFadeTime || hasFadeDist) {
+				if (hasFadeTime || hasFadeDist || hasSkipNear || hasSkipHidden) {
 					G_VehFadeTime = hasFadeTime ? fadeTime : 0.53f;
 					G_VehFadeDist = hasFadeDist ? fadeDist : 0.0f;
+					G_VehFadeSkipNear = hasSkipNear ? skipNear : 0.0f;
+					G_VehFadeSkipHidden = hasSkipHidden;
 					patch::RedirectCall(0x6B19F2, VehicleUpdateClumpAlpha_Smooth); // CAutomobile::ProcessControl
 					patch::RedirectCall(0x6B92F5, VehicleUpdateClumpAlpha_Smooth); // CBike::ProcessControl
 					patch::RedirectCall(0x6F185D, VehicleUpdateClumpAlpha_Smooth); // CBoat::ProcessControl
 				}
-				if (hasFadeTime || hasFadeDist || hasSpawnFade) {
+				if (hasFadeTime || hasFadeDist || hasSkipNear || hasSkipHidden || hasSpawnFade) {
 					InstallVehFadeHiDetail();
 				}
 			}

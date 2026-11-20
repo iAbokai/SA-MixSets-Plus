@@ -73,7 +73,8 @@ public:
 
 	static inline CVehicle* secPlayerVehicle;
 	static inline bool G_LogAudioStats;
-	static inline float G_VehFadeTime, G_VehFadeDist;
+	static inline float G_VehFadeTime, G_VehFadeDist, G_VehFadeSkipNear;
+	static inline bool G_VehFadeSkipHidden;
 	static inline bool G_FixStaleVehSounds;
 
 	////////////////////////////////////////////////
