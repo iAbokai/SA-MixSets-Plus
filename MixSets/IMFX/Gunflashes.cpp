@@ -109,10 +109,10 @@ void __fastcall Gunflashes::DoDriveByGunflash(CPed *driver, int, int, bool leftH
 
 void __fastcall Gunflashes::MyTriggerGunflash(Fx_c *fx, int, CEntity *entity, CVector &origin, CVector &target, bool doGunflash) {
     if (entity && entity->m_nType == ENTITY_TYPE_PED) {
-        CPed *owner = reinterpret_cast<CPed *>(entity);
-        pedExt.Get(owner).bLeftHandGunflashThisFrame = bLeftHand;
-        pedExt.Get(owner).bRightHandGunflashThisFrame = !bLeftHand;
-        pedExt.Get(owner).bInVehicle = bVehicleGunflash;
+        PedExtension &ownerExt = pedExt.Get(reinterpret_cast<CPed *>(entity));
+        ownerExt.bLeftHandGunflashThisFrame = bLeftHand;
+        ownerExt.bRightHandGunflashThisFrame = !bLeftHand;
+        ownerExt.bInVehicle = bVehicleGunflash;
     }
     else {
         if (CVector::Distance(target, origin) > 0.0f) {
@@ -137,15 +137,16 @@ void __fastcall Gunflashes::MyTriggerGunflash(Fx_c *fx, int, CEntity *entity, CV
 }
 
 void Gunflashes::CreateGunflashEffectsForPed(CPed *ped) {
+    PedExtension &ext = pedExt.Get(ped); // one pool-index lookup instead of one per access
     bool ary[2];
-    ary[0] = pedExt.Get(ped).bLeftHandGunflashThisFrame;
-    ary[1] = pedExt.Get(ped).bRightHandGunflashThisFrame;
-    bool inVehicle = pedExt.Get(ped).bInVehicle;
+    ary[0] = ext.bLeftHandGunflashThisFrame;
+    ary[1] = ext.bRightHandGunflashThisFrame;
+    bool inVehicle = ext.bInVehicle;
     for (int i = 0; i < 2; i++) {
         if (ary[i]) {
 
-			if (pedExt.Get(ped).pMats[i] == nullptr) pedExt.Get(ped).pMats[i] = new RwMatrix();
-            RwMatrix *mat = pedExt.Get(ped).pMats[i];
+			if (ext.pMats[i] == nullptr) ext.pMats[i] = new RwMatrix();
+            RwMatrix *mat = ext.pMats[i];
 			if (!mat) break;
 
             bool leftHand = i == 0;
@@ -194,5 +195,5 @@ void Gunflashes::CreateGunflashEffectsForPed(CPed *ped) {
             }
         }
     }
-    pedExt.Get(ped).Reset();
+    ext.Reset();
 }

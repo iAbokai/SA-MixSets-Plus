@@ -397,10 +397,14 @@ MixSets::MixSets()
 					}
 				}
 
+				// Both CARMOD patches use the same script: look it up once
+				unsigned int carmodScript = 0;
+				if (G_NoGarageRadioChange || G_TuningChoose2colors)
+					Command<GET_SCRIPT_STRUCT_NAMED>("CARMOD", &carmodScript);
+
 				if (G_NoGarageRadioChange)
 				{
-					unsigned int script;
-					Command<GET_SCRIPT_STRUCT_NAMED>("CARMOD", &script);
+					unsigned int script = carmodScript;
 					if (script)
 					{
 						unsigned char* offset = reinterpret_cast<CRunningScript*>(script)->m_pBaseIP;
@@ -483,9 +487,7 @@ MixSets::MixSets()
 
 				if (G_TuningChoose2colors)
 				{
-					unsigned int script;
-					Command<GET_SCRIPT_STRUCT_NAMED>("CARMOD", &script);
-					if (script)
+					if (carmodScript)
 					{
 						*(CTheScripts::ScriptSpace + (10443 * 4)) = 2;
 					}
@@ -748,7 +750,7 @@ void MixSets::SetIdlePriority()
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-void MixSets::ReadOldINI(CIniReader ini, fstream* lg, string section, string key)
+void MixSets::ReadOldINI(CIniReader& ini, fstream* lg, const string& section, const string& key)
 {
 	linb::bParsePreserveComments = true;
 
@@ -812,7 +814,7 @@ inline bool MixSets::FileExists(const std::string& name)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool MixSets::ReadIniFloat(CIniReader ini, fstream* lg, string section, string key, float* f)
+bool MixSets::ReadIniFloat(CIniReader& ini, fstream* lg, const string& section, const string& key, float* f)
 {
 	if (MixSets::bReadOldINI) ReadOldINI(ini, lg, section, key);
 	*f = ini.ReadFloat(section, key, -1);
@@ -824,7 +826,7 @@ bool MixSets::ReadIniFloat(CIniReader ini, fstream* lg, string section, string k
 	else return false;
 }
 
-bool MixSets::ReadIniInt(CIniReader ini, fstream* lg, string section, string key, int* i)
+bool MixSets::ReadIniInt(CIniReader& ini, fstream* lg, const string& section, const string& key, int* i)
 {
 	if (MixSets::bReadOldINI) ReadOldINI(ini, lg, section, key);
 	*i = ini.ReadInteger(section, key, -1);
@@ -836,7 +838,7 @@ bool MixSets::ReadIniInt(CIniReader ini, fstream* lg, string section, string key
 	else return false;
 }
 
-bool MixSets::ReadIniBool(CIniReader ini, fstream* lg, string section, string key)
+bool MixSets::ReadIniBool(CIniReader& ini, fstream* lg, const string& section, const string& key)
 {
 	if (MixSets::bReadOldINI) ReadOldINI(ini, lg, section, key);
 	//bool b = ini.ReadBoolean(section, key, 0);
@@ -1125,6 +1127,12 @@ void MixSets::FixStaleVehicleSounds()
 		if (!veh) continue;
 
 		CAEVehicleAudioEntity& ae = veh->m_vehicleAudio;
+
+		// Nothing to check while the entity holds no sound pointer at all (most vehicles away from the player)
+		bool anySound = ae.m_pRoadNoiseSound || ae.m_pFlatTyreSound || ae.m_pReverseGearSound || ae.m_pHornTonSound || ae.m_pSirenSound || ae.m_pPoliceSirenSound;
+		for (int e = 0; !anySound && e < 12; e++) anySound = ae.m_aEngineSounds[e].m_pSound != nullptr;
+		if (!anySound) continue;
+
 		CAEAudioEntity* owner = &ae;
 		VehSoundField f[20];
 		const int n = GetVehicleSoundFields(ae, f);

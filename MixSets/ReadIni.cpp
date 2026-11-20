@@ -230,7 +230,7 @@ void MixSets::ReadIni_BeforeFirstFrame()
 				regs.eax = *(uint32_t*)(regs.esi + 0x598);
 
 				CPed* ped = (CPed*)regs.esi;
-				if (ped->m_pIntelligence->m_TaskMgr.FindActiveTaskByType(TASK_COMPLEX_ENTER_CAR_AS_DRIVER) || (ped->bInVehicle && ped->m_pVehicle))
+				if ((ped->bInVehicle && ped->m_pVehicle) || ped->m_pIntelligence->m_TaskMgr.FindActiveTaskByType(TASK_COMPLEX_ENTER_CAR_AS_DRIVER)) // cheap test first: the task scan is skipped for peds in vehicles
 				{
 					if (ped->m_pShadowData)
 					{
